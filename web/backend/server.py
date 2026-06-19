@@ -1,5 +1,5 @@
 """
-web/backend/server.py — VyalaArchon Web Bridge (Nuclear Filter Version)
+web/backend/server.py — VyalaArchon Web Bridge (OpenRouter Hybrid Version)
 """
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import httpx # NEW: For calling OpenRouter
 
 import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -25,6 +26,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 log = logging.getLogger("vyalaarchon.web")
 
 BAND_BASE_URL = os.environ.get("BAND_BASE_URL", "https://app.band.ai")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = "meta-llama/llama-3.1-8b-instruct:free" # Free, fast, reliable
 
 def _load_all_agent_creds() -> dict[str, dict[str, str]]:
     env_map = {
@@ -93,6 +96,53 @@ def _make_client() -> AsyncRestClient:
 class ScanRequest(BaseModel):
     repo_url: str
 
+# --- 🚀 NEW: OPENROUTER AI GENERATION ---
+async def generate_ai_report(findings_text: str) -> str:
+    if not OPENROUTER_API_KEY:
+        return "⚠️ OPENROUTER_API_KEY not set. Skipping AI Learning Path generation."
+    
+    prompt = f"""You are an expert cybersecurity educator. Based on the following quantum vulnerability scan findings, generate a concise, actionable Learning Path and Study Plan.
+
+Findings:
+{findings_text}
+
+Output exactly in this format, no markdown code blocks:
+
+📚 LEARNING PATH
+• Module 1: [Algorithm] -> [Replacement]
+  - Key Concepts: ...
+  - Implementation Steps: ...
+
+🗓️ STUDY PLAN (Week-by-Week)
+• Week 1: ...
+• Week 2: ...
+
+🎯 Final Assessment: ...
+"""
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "HTTP-Referer": "http://localhost",
+                    "X-Title": "VyalaArchon",
+                },
+                json={
+                    "model": OPENROUTER_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 800,
+                    "temperature": 0.4
+                },
+                timeout=30.0
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"⚠️ AI generation failed: {e}"
+
 @app.post("/api/scan")
 async def start_scan(req: ScanRequest):
     client = _make_client()
@@ -130,8 +180,6 @@ async def stream_room(websocket: WebSocket, room_id: str):
     await websocket.accept()
     seen_ids: set[str] = set()
     client = _make_client()
-    
-    # --- 🚨 NUCLEAR FILTER FLAG 🚨 ---
     scan_complete = False
 
     try:
@@ -156,31 +204,56 @@ async def stream_room(websocket: WebSocket, room_id: str):
                         )
                         content = _resolve_mentions(getattr(msg, "content", ""))
                         
-                        # Check if this is the final scan report
                         is_final_report = "SCAN COMPLETE" in content and "Top findings:" in content
-                        if is_final_report:
+                        
+                        # --- 🚀 THE HYBRID BEAM ---
+                        if is_final_report and not scan_complete:
                             scan_complete = True
                             
-                        # --- 🚨 NUCLEAR FILTER 🚨 ---
-                        # Once the scan is complete, IGNORE all messages except the final report.
-                        # This stops the UI from seeing the Study Plan/Orchestrator spam.
-                        if scan_complete and not is_final_report:
-                            continue
+                            # 1. Send the raw findings to UI (Assessment Agent)
+                            await websocket.send_json({
+                                "id": msg_id,
+                                "author": sender_name,
+                                "content": content,
+                                "created_at": str(_inserted_at(msg)),
+                                "is_done": False,
+                            })
                             
-                        await websocket.send_json({
-                            "id": msg_id,
-                            "author": sender_name,
-                            "content": content,
-                            "created_at": str(_inserted_at(msg)),
-                            "is_done": is_final_report,
-                        })
-                        
-                        # If we just sent the final report, close the WebSocket
-                        if is_final_report:
-                            log.info(f"Scan complete in room {room_id}. Closing WebSocket.")
+                            # 2. Generate the rest via OpenRouter
+                            log.info("🚀 Generating AI Learning Path via OpenRouter...")
+                            ai_report = await generate_ai_report(content)
+                            
+                            # 3. Send the AI report to UI (Fake the author as Curator)
+                            await websocket.send_json({
+                                "id": f"ai-report-{msg_id}",
+                                "author": "qs-curator", 
+                                "content": ai_report,
+                                "created_at": str(_inserted_at(msg)),
+                                "is_done": False,
+                            })
+                            
+                            # 4. Send final completion message (Fake as Orchestrator)
+                            await websocket.send_json({
+                                "id": f"done-{msg_id}",
+                                "author": "qs-orchestrator",
+                                "content": "✅ VyalaArchon pipeline complete! Scan → Learning Path → Study Plan all done.",
+                                "created_at": str(_inserted_at(msg)),
+                                "is_done": True,
+                            })
+                            
                             await asyncio.sleep(1)
                             await websocket.close()
                             return
+                            
+                        elif not scan_complete:
+                            # Normal message before scan is complete
+                            await websocket.send_json({
+                                "id": msg_id,
+                                "author": sender_name,
+                                "content": content,
+                                "created_at": str(_inserted_at(msg)),
+                                "is_done": False,
+                            })
             except Exception as e:
                 log.warning(f"Band poll error: {e}")
 
