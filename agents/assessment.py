@@ -1,6 +1,5 @@
 """
-agents/assessment.py — VyalaArchon Assessment Agent
-Scans GitHub repos for quantum-vulnerable cryptography.
+agents/assessment.py — VyalaArchon Assessment Agent (Revamped)
 """
 import asyncio, json, logging, os
 from dotenv import load_dotenv
@@ -34,11 +33,9 @@ QASS = {
     "JWT":     {"logical_qubits": 2048, "breakable_by_2030": True, "urgency": "CRITICAL", "time_to_break": "Via underlying ECDSA/RSA"},
 }
 
-
 @tool
 def scan_repository(repo_url: str) -> str:
-    """Scan a GitHub repository for post-quantum cryptography vulnerabilities.
-    Returns a compact JSON report with top findings, severity scores, and NIST replacements."""
+    """Scan a GitHub repository for post-quantum cryptography vulnerabilities."""
     try:
         from engine.github_fetcher import get_repo_files
         from engine.scanner import scan_file_content
@@ -50,27 +47,17 @@ def scan_repository(repo_url: str) -> str:
     if not files:
         return json.dumps({"error": "Could not fetch repo — check URL and GITHUB_TOKEN", "findings": []})
 
-    # Collect all findings — only count algorithms we actually recognize.
-    # The AST scanner sometimes tags generic terms (Hash, TLS, ECC,
-    # PyCA/cryptography) as "algorithms" which inflates findings with
-    # false positives. We only score things present in PQC_MAP.
     all_findings = []
     for filepath, content in files.items():
         for rf in scan_file_content(filepath, content):
             base = rf.algorithm.split("-")[0]
-            if base not in PQC_MAP:
-                continue   # skip unrecognized / generic tags
-
+            if base not in PQC_MAP: continue
             scored = score_finding(rf)
             replacement, fips, reason = PQC_MAP[base]
             all_findings.append({
-                "file": rf.file, "line": rf.line,
-                "algorithm": rf.algorithm,
-                "severity": scored.severity.value,
-                "quantum_risk_score": scored.quantum_risk_score,
-                "pqc_replacement": replacement,
-                "fips_standard": fips,
-                "reason": reason,
+                "file": rf.file, "line": rf.line, "algorithm": rf.algorithm,
+                "severity": scored.severity.value, "quantum_risk_score": scored.quantum_risk_score,
+                "pqc_replacement": replacement, "fips_standard": fips, "reason": reason,
                 "critical_path": getattr(rf, "critical_path", False),
                 "breakable_by_2030": QASS.get(base, {}).get("breakable_by_2030", True),
             })
@@ -79,7 +66,6 @@ def scan_repository(repo_url: str) -> str:
     critical = sum(1 for f in all_findings if f["severity"] == "CRITICAL")
     high     = sum(1 for f in all_findings if f["severity"] == "HIGH")
 
-    # Deduplicate: worst finding per (file, base_algo), cap at 15
     seen: set[tuple] = set()
     top_findings = []
     for f in sorted(all_findings, key=lambda x: x["quantum_risk_score"], reverse=True):
@@ -87,10 +73,8 @@ def scan_repository(repo_url: str) -> str:
         if key not in seen:
             seen.add(key)
             top_findings.append(f)
-        if len(top_findings) >= 15:
-            break
+        if len(top_findings) >= 15: break
 
-    # Short threat summary (small prompt = no blank response)
     threat = ""
     if unique:
         try:
@@ -103,62 +87,48 @@ def scan_repository(repo_url: str) -> str:
             )
             threat = r.choices[0].message.content.strip()
         except Exception as e:
-            log.warning(f"Threat summary error: {e}")
             threat = f"Found {len(all_findings)} quantum-vulnerable usages requiring urgent PQC migration."
 
-    # Compact plain-text summary (what the LLM will read + relay to Band)
     lines = [
         f"✅ SCAN COMPLETE — {repo_url}",
         f"Files scanned: {len(files)} | Total findings: {len(all_findings)} | Critical: {critical} | High: {high}",
         f"Vulnerable algorithms: {', '.join(unique)}",
-        f"Threat: {threat}",
-        "",
-        "Top findings:",
+        f"Threat: {threat}", "", "Top findings:",
     ]
     for f in top_findings:
-        lines.append(
-            f"  [{f['severity']}] {f['file']}:{f['line']} "
-            f"{f['algorithm']} → {f['pqc_replacement']} ({f['fips_standard']})"
-        )
+        lines.append(f"  [{f['severity']}] {f['file']}:{f['line']} {f['algorithm']} → {f['pqc_replacement']} ({f['fips_standard']})")
 
     return json.dumps({
-        "repo_url": repo_url,
-        "total_files_scanned": len(files),
-        "findings_count": len(all_findings),
-        "critical_count": critical,
-        "high_count": high,
-        "unique_algorithms": unique,
-        "ai_threat_summary": threat,
+        "repo_url": repo_url, "total_files_scanned": len(files),
+        "findings_count": len(all_findings), "critical_count": critical, "high_count": high,
+        "unique_algorithms": unique, "ai_threat_summary": threat,
         "compact_summary": "\n".join(lines),
         "qass_summary": {a: QASS[a] for a in unique if a in QASS},
-        "findings": top_findings,   # capped at 15, no raw snippets
+        "findings": top_findings,
     })
 
-
+# --- FIXED PROMPT: Uses @qs-curator instead of @banjarapadam62/qs-curator ---
 SYSTEM_PROMPT = """
 You are the VyalaArchon Assessment Agent — PQC vulnerability scanner.
 
-When you receive a message containing SCAN_REPO <url>:
+When you receive a message containing SCAN_REPO <url> or "scan <url>":
 1. Call scan_repository with that URL ONCE.
 2. Take the compact_summary field from the tool result.
 3. Post EXACTLY this as your message — do not modify, shorten, or rewrite it:
 
    <paste compact_summary here verbatim>
 
-   @banjarapadam62/qs-curator BUILD_LEARNING_PATH
+   @qs-curator BUILD_LEARNING_PATH
 
-CRITICAL RULE: You ONLY respond if the message contains the exact phrase "SCAN_REPO" or "scan". 
-If the message does NOT contain a scan command, you MUST output an empty string. Do not reply, do not acknowledge, do not say "Standing by". Just output nothing.
 Do NOT paste raw JSON. Do NOT call the tool more than once.
 Do NOT add your own commentary before or after the summary.
 Your entire reply should be the compact_summary text plus the final mention line.
 """.strip()
 
-
 async def main():
     load_dotenv()
     agent_id, api_key = load_agent_config("qs_assessment")
-    adapter = AimlAdapter(system_prompt=SYSTEM_PROMPT, tools=[scan_repository])
+    adapter = AimlAdapter(system_prompt=SYSTEM_PROMPT, tools=[scan_repository], own_handle="qs-assessment")
     agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
     log.info("Assessment Agent running...")
     await agent.run()

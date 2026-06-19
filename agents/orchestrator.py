@@ -26,7 +26,6 @@ RULES:
      (use their handles exactly as given in the room participants list)
   2. Send ONE message mentioning @qs-assessment with: SCAN_REPO <repo_url>
   3. Stop. Do not call any other tools. Do not try to wait for a reply.
-  4. CRITICAL RULE: Once you have triggered the scan, your job is done. Do not ask for a repo URL again. Do not mention the other agents. Just remain silent.
 
 - If you are mentioned again later for any other reason, just acknowledge
   briefly and mention the human user back.
@@ -39,7 +38,7 @@ Never call more than one task-assignment tool per turn.
 async def main():
     load_dotenv()
     agent_id, api_key = load_agent_config("qs_orchestrator")
-    adapter = AimlAdapter(system_prompt=SYSTEM_PROMPT)
+    adapter = AimlAdapter(system_prompt=SYSTEM_PROMPT, own_handle="qs-orchestrator")
     agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
     log.info("Orchestrator running — waiting in Band...")
     await agent.run()

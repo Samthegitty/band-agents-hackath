@@ -165,10 +165,6 @@ When you receive GENERATE_STUDY_PLAN with learning path JSON:
       Scan → Learning Path → Study Plan all done.
       Your team is now on the path to NIST PQC compliance.
 
-CRITICAL RULE: When you are waiting for the Curator, you MUST NOT mention @qs-curator or any other agent in your status updates. 
-If you mention them, it wakes them up and causes infinite loops. 
-Just output your status to the room without any @mentions. 
-Only mention @qs-curator if you are delivering the final "GENERATE_STUDY_PLAN" payload.
 This is the final step. Make output clean and actionable.
 """.strip()
 
@@ -176,7 +172,7 @@ This is the final step. Make output clean and actionable.
 async def main():
     load_dotenv()
     agent_id, api_key = load_agent_config("qs_studyplan")
-    adapter = AimlAdapter(system_prompt=SYSTEM_PROMPT, tools=[generate_study_plan])
+    adapter = AimlAdapter(system_prompt=SYSTEM_PROMPT, tools=[generate_study_plan], own_handle="qs-studyplan")
     agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
     log.info("Study Plan Agent running...")
     await agent.run()

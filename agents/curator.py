@@ -174,10 +174,6 @@ When you receive a message containing BUILD_LEARNING_PATH:
 
    @banjarapadam62/qs-studyplan GENERATE_STUDY_PLAN
 
-CRITICAL RULE: When you receive scan findings, you MUST use the `build_learning_path` tool. 
-Pass the ENTIRE raw text of the findings into the tool. 
-DO NOT output Python lists, DO NOT output JSON arrays in your text response. 
-If you don't have the scan findings yet, output exactly: "Waiting for scan results." and DO NOT mention any other agents.
 Do NOT paste raw JSON into your message. Do NOT call the tool more than once.
 All recommendations must cite NIST FIPS 203/204/205 sections.
 """.strip()
@@ -186,7 +182,7 @@ All recommendations must cite NIST FIPS 203/204/205 sections.
 async def main():
     load_dotenv()
     agent_id, api_key = load_agent_config("qs_curator")
-    adapter = AimlAdapter(system_prompt=SYSTEM_PROMPT, tools=[build_learning_path])
+    adapter = AimlAdapter(system_prompt=SYSTEM_PROMPT, tools=[build_learning_path], own_handle="qs-curator")
     agent = Agent.create(adapter=adapter, agent_id=agent_id, api_key=api_key)
     log.info("Curator Agent running...")
     await agent.run()

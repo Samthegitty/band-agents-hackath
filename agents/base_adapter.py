@@ -1,5 +1,5 @@
 """
-agents/base_adapter.py — VyalaArchon Band Adapter (Nuclear Fix Version)
+agents/base_adapter.py — VyalaArchon Band Adapter (Revamped)
 """
 from __future__ import annotations
 
@@ -38,12 +38,13 @@ def _strip_reasoning(text: str) -> str:
 class AimlAdapter(SimpleAdapter):
     SUPPORTED_EMIT = frozenset({Emit.EXECUTION})
 
-    def __init__(self, system_prompt: str, tools: list | None = None):
+    def __init__(self, system_prompt: str, tools: list | None = None, own_handle: str | None = None):
         super().__init__()
         self.system_prompt = system_prompt
         self._custom_tools: list[BaseTool] = tools or []
         self._custom_tool_map = {t.name: t for t in self._custom_tools}
         self._history: dict[str, list[dict]] = {}
+        self.own_handle = own_handle
 
     def _custom_tool_schemas(self) -> list[dict]:
         schemas = []
@@ -55,10 +56,8 @@ class AimlAdapter(SimpleAdapter):
     async def _run_custom_tool(self, name: str, args: dict) -> str:
         tool = self._custom_tool_map.get(name)
         if not tool: return f"Unknown tool: {name}"
-        try:
-            return str(tool.invoke(args))
-        except Exception as e:
-            return f"Tool error: {e}"
+        try: return str(tool.invoke(args))
+        except Exception as e: return f"Tool error: {e}"
 
     async def _get_all_handles(self, tools) -> list[str]:
         try:
@@ -73,7 +72,7 @@ class AimlAdapter(SimpleAdapter):
             return []
 
     async def _send_with_fallback(self, tools, content: str, mentions: list[str]) -> None:
-        # --- NUCLEAR FIX 1: Automatically fix broken namespace mentions ---
+        # Auto-fix broken namespace mentions just in case
         content = re.sub(r'@banjarapadam62/qs-curator', '@qs-curator', content)
         content = re.sub(r'@banjarapadam62/qs-studyplan', '@qs-studyplan', content)
         content = re.sub(r'@banjarapadam62/qs-assessment', '@qs-assessment', content)
@@ -120,6 +119,14 @@ class AimlAdapter(SimpleAdapter):
             log.error(f"[{room_id[:8]}] UNHANDLED ERROR: {e}", exc_info=True)
 
     async def _handle_message(self, msg, tools, history, participants_msg, contacts_msg, *, is_session_bootstrap: bool, room_id: str) -> None:
+        # Hard gate: Only wake up if explicitly mentioned
+        if self.own_handle and not is_session_bootstrap:
+            content_lower = (msg.content or "").lower()
+            handle_lower = self.own_handle.lower()
+            mentioned = (f"@{handle_lower}" in content_lower or handle_lower in content_lower)
+            if not mentioned:
+                return
+
         room_history = self._history.setdefault(room_id, [])
         system = self.system_prompt + "\n\nIMPORTANT: Respond with ONLY your final message content. Do not narrate your reasoning."
         if participants_msg: system += f"\n\nRoom participants:\n{participants_msg}"
@@ -160,17 +167,14 @@ class AimlAdapter(SimpleAdapter):
             else:
                 reply = _strip_reasoning((choice.message.content or "").strip())
 
-                # --- NUCLEAR FIX 2: Drop Chain-of-Thought Hallucinations ---
-                cot_phrases = [
-                    "the user is asking me", "according to my instructions", "i think the safest",
-                    "let's check", "wait, looking back", "this seems like", "i should probably",
-                    "actually, looking at", "let me re-read", "the conversation shows", "role-playing"
-                ]
-                if any(phrase in reply.lower() for phrase in cot_phrases):
-                    log.info(f"[{room_id[:8]}] Dropped CoT hallucination.")
-                    return
+                # --- 🚨 THE AGENT KILL SWITCH 🚨 ---
+                # If the Assessment agent just output the scan report, 
+                # append the completion signal so the backend closes the UI.
+                if self.own_handle == "qs-assessment" and "SCAN COMPLETE" in reply and "Top findings:" in reply:
+                    if "processing complete" not in reply.lower():
+                        reply += "\n\nProcessing complete."
 
-                # --- NUCLEAR FIX 3: Aggressive Boilerplate Filter ---
+                # --- STRICT BOILERPLATE FILTER ---
                 ignore_phrases = [
                     "standing by", "waiting for", "awaiting", "i am the", "acknowledged",
                     "pipeline active", "pipeline is in motion", "noted", "understood",
