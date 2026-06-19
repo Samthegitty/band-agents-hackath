@@ -27,7 +27,7 @@ log = logging.getLogger("vyalaarchon.web")
 
 BAND_BASE_URL = os.environ.get("BAND_BASE_URL", "https://app.band.ai")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = "meta-llama/llama-3.1-8b-instruct:free" # Free, fast, reliable
+OPENROUTER_MODEL = "nvidia/llama-nemotron-rerank-vl-1b-v2:free" # Free, fast, reliable
 
 def _load_all_agent_creds() -> dict[str, dict[str, str]]:
     env_map = {
