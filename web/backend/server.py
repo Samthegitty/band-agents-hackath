@@ -1,5 +1,5 @@
 """
-web/backend/server.py — VyalaArchon Web Bridge (Fixed Hybrid Version)
+web/backend/server.py — VyalaArchon Web Bridge (Final Fixed Version)
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from thenvoi_rest import (
 )
 from thenvoi_rest.types import ChatMessageRequestMentionsItem
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("vyalaarchon.web")
 
 BAND_BASE_URL = os.environ.get("BAND_BASE_URL", "https://app.band.ai")
@@ -98,21 +98,18 @@ class ScanRequest(BaseModel):
 
 async def generate_ai_report(findings_text: str) -> str:
     if not OPENROUTER_API_KEY:
-        return "⚠️ OPENROUTER_API_KEY not set. Skipping AI Learning Path generation."
+        return "⚠️ OPENROUTER_API_KEY not set."
     
-    prompt = f"""You are an expert cybersecurity educator. Based on the following quantum vulnerability scan findings, generate a concise, actionable Learning Path and Study Plan.
+    prompt = f"""Based on these quantum vulnerability findings, generate a concise study plan:
 
-Findings:
 {findings_text}
 
-Output exactly in this format, no markdown code blocks:
-
+Output format:
 📚 LEARNING PATH
-• Module 1: [Algorithm] -> [Replacement]
-  - Key Concepts: ...
-  - Implementation Steps: ...
-
-🗓️ STUDY PLAN (Week-by-Week)
+• [Algorithm] → [Replacement]
+  Key concepts: ...
+  
+🗓️ STUDY PLAN
 • Week 1: ...
 • Week 2: ...
 
@@ -140,7 +137,7 @@ Output exactly in this format, no markdown code blocks:
             data = resp.json()
             return data["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        return f"⚠️ AI generation failed: {e}"
+        return f"⚠️ AI error: {e}"
 
 @app.post("/api/scan")
 async def start_scan(req: ScanRequest):
@@ -149,7 +146,7 @@ async def start_scan(req: ScanRequest):
         chat=ChatRoomRequest(task_id=None)
     )
     room_id = room_resp.data.id
-    log.info(f"Created room {room_id} for {req.repo_url}")
+    log.info(f"✅ Created room {room_id}")
 
     for role_key, handle in SUB_AGENTS:
         agent_id = _AGENT_CREDS[role_key]["agent_id"]
@@ -159,7 +156,7 @@ async def start_scan(req: ScanRequest):
                 participant=ParticipantRequest(participant_id=agent_id, role="member"),
             )
         except Exception as e:
-            log.error(f"FAILED to add {handle}: {e}")
+            log.error(f"❌ Failed to add {handle}: {e}")
 
     assessment_id = _AGENT_CREDS["qs_assessment"]["agent_id"]
     await client.agent_api_messages.create_agent_chat_message(
@@ -171,7 +168,7 @@ async def start_scan(req: ScanRequest):
             ],
         ),
     )
-    log.info(f"Kickoff message posted to room {room_id}")
+    log.info(f"✅ Kickoff message posted")
     return {"room_id": room_id}
 
 @app.websocket("/ws/{room_id}")
@@ -180,17 +177,20 @@ async def stream_room(websocket: WebSocket, room_id: str):
     seen_ids: set[str] = set()
     client = _make_client()
     scan_complete = False
-    findings_content = ""
 
-    log.info(f"WebSocket connected for room {room_id}")
+    log.info(f"🔌 WebSocket connected for room {room_id}")
 
     try:
+        poll_count = 0
         while True:
+            poll_count += 1
             try:
                 resp = await client.agent_api_messages.list_agent_messages(
                     chat_id=room_id, page=1, page_size=50,
                 )
                 messages = resp.data or []
+
+                log.debug(f"📡 Poll {poll_count}: Found {len(messages)} messages")
 
                 def _inserted_at(m):
                     return getattr(m, "inserted_at", "") or ""
@@ -206,74 +206,63 @@ async def stream_room(websocket: WebSocket, room_id: str):
                         )
                         content = _resolve_mentions(getattr(msg, "content", ""))
                         
-                        # Check if this is the final report
-                        is_final_report = "SCAN COMPLETE" in content and "Top findings:" in content
+                        log.info(f"💬 New message from {sender_name}: {content[:80]}...")
                         
-                        if is_final_report:
-                            log.info(f"🎯 Final report detected from {sender_name}")
-                            findings_content = content
+                        # Send ALL messages to UI immediately
+                        await websocket.send_json({
+                            "id": msg_id,
+                            "author": sender_name,
+                            "content": content,
+                            "created_at": str(_inserted_at(msg)),
+                            "is_done": False,
+                        })
+                        
+                        # Check if this is the Assessment report
+                        if "SCAN COMPLETE" in content and "Top findings:" in content and not scan_complete:
+                            log.info("🎯 DETECTED: Assessment scan complete!")
                             scan_complete = True
                             
-                            # Send the final findings to UI
-                            await websocket.send_json({
-                                "id": msg_id,
-                                "author": sender_name,
-                                "content": content,
-                                "created_at": str(_inserted_at(msg)),
-                                "is_done": False,
-                            })
-                            
                             # Generate AI report
-                            log.info("🚀 Generating AI Learning Path via OpenRouter...")
+                            log.info("🚀 Calling OpenRouter AI...")
                             ai_report = await generate_ai_report(content)
+                            log.info(f"✅ AI Report generated: {ai_report[:50]}...")
                             
                             # Send AI report as Curator
                             await websocket.send_json({
-                                "id": f"ai-report-{msg_id}",
+                                "id": f"ai-{msg_id}",
                                 "author": "qs-curator",
                                 "content": ai_report,
                                 "created_at": str(_inserted_at(msg)),
                                 "is_done": False,
                             })
                             
-                            # Send completion message as Orchestrator
+                            # Send completion
                             await websocket.send_json({
                                 "id": f"done-{msg_id}",
                                 "author": "qs-orchestrator",
-                                "content": "✅ VyalaArchon pipeline complete! Scan → Learning Path → Study Plan all done.",
+                                "content": "✅ Pipeline complete!",
                                 "created_at": str(_inserted_at(msg)),
                                 "is_done": True,
                             })
                             
-                            log.info("✅ All messages sent, closing WebSocket")
+                            log.info("✅ All done! Closing WebSocket")
                             await asyncio.sleep(1)
                             await websocket.close()
                             return
-                        
-                        else:
-                            # Send normal message to UI
-                            log.info(f"📨 Forwarding message from {sender_name}: {content[:50]}...")
-                            await websocket.send_json({
-                                "id": msg_id,
-                                "author": sender_name,
-                                "content": content,
-                                "created_at": str(_inserted_at(msg)),
-                                "is_done": False,
-                            })
                             
             except Exception as e:
-                log.error(f"Band poll error: {e}", exc_info=True)
+                log.error(f"❌ Poll error: {e}", exc_info=True)
 
             await asyncio.sleep(2)
 
     except WebSocketDisconnect:
-        log.info(f"Client disconnected from room {room_id}")
+        log.info("🔌 Client disconnected")
     except Exception as e:
-        log.error(f"WebSocket error: {e}", exc_info=True)
+        log.error(f"❌ WebSocket error: {e}", exc_info=True)
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "orchestrator_agent_id": ORCH_AGENT_ID, "band_base_url": BAND_BASE_URL}
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn
