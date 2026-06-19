@@ -1,5 +1,5 @@
 """
-web/backend/server.py — VyalaArchon Web Bridge (Revamped)
+web/backend/server.py — VyalaArchon Web Bridge (Nuclear Filter Version)
 """
 from __future__ import annotations
 
@@ -130,6 +130,9 @@ async def stream_room(websocket: WebSocket, room_id: str):
     await websocket.accept()
     seen_ids: set[str] = set()
     client = _make_client()
+    
+    # --- 🚨 NUCLEAR FILTER FLAG 🚨 ---
+    scan_complete = False
 
     try:
         while True:
@@ -153,26 +156,29 @@ async def stream_room(websocket: WebSocket, room_id: str):
                         )
                         content = _resolve_mentions(getattr(msg, "content", ""))
                         
-                        # --- 🚨 THE UI KILL SWITCH 🚨 ---
-                        # If the Assessment agent posted the scan report, 
-                        # or any agent says "Processing complete", we are done.
-                        is_done = False
-                        if "SCAN COMPLETE" in content and "Top findings:" in content:
-                            is_done = True
-                        if "processing complete" in content.lower():
-                            is_done = True
+                        # Check if this is the final scan report
+                        is_final_report = "SCAN COMPLETE" in content and "Top findings:" in content
+                        if is_final_report:
+                            scan_complete = True
+                            
+                        # --- 🚨 NUCLEAR FILTER 🚨 ---
+                        # Once the scan is complete, IGNORE all messages except the final report.
+                        # This stops the UI from seeing the Study Plan/Orchestrator spam.
+                        if scan_complete and not is_final_report:
+                            continue
                             
                         await websocket.send_json({
                             "id": msg_id,
                             "author": sender_name,
                             "content": content,
                             "created_at": str(_inserted_at(msg)),
-                            "is_done": is_done,
+                            "is_done": is_final_report,
                         })
                         
-                        if is_done:
-                            log.info(f"Pipeline finished in room {room_id}. Closing WebSocket.")
-                            await asyncio.sleep(1) # Give frontend time to receive
+                        # If we just sent the final report, close the WebSocket
+                        if is_final_report:
+                            log.info(f"Scan complete in room {room_id}. Closing WebSocket.")
+                            await asyncio.sleep(1)
                             await websocket.close()
                             return
             except Exception as e:
