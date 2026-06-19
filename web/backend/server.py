@@ -1,5 +1,5 @@
 """
-web/backend/server.py — VyalaArchon Web Bridge (OpenRouter Hybrid Version)
+web/backend/server.py — VyalaArchon Web Bridge (Fixed Hybrid Version)
 """
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-import httpx # NEW: For calling OpenRouter
+import httpx
 
 import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -27,7 +27,7 @@ log = logging.getLogger("vyalaarchon.web")
 
 BAND_BASE_URL = os.environ.get("BAND_BASE_URL", "https://app.band.ai")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = "nvidia/llama-nemotron-rerank-vl-1b-v2:free" # Free, fast, reliable
+OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 
 def _load_all_agent_creds() -> dict[str, dict[str, str]]:
     env_map = {
@@ -96,7 +96,6 @@ def _make_client() -> AsyncRestClient:
 class ScanRequest(BaseModel):
     repo_url: str
 
-# --- 🚀 NEW: OPENROUTER AI GENERATION ---
 async def generate_ai_report(findings_text: str) -> str:
     if not OPENROUTER_API_KEY:
         return "⚠️ OPENROUTER_API_KEY not set. Skipping AI Learning Path generation."
@@ -181,6 +180,9 @@ async def stream_room(websocket: WebSocket, room_id: str):
     seen_ids: set[str] = set()
     client = _make_client()
     scan_complete = False
+    findings_content = ""
+
+    log.info(f"WebSocket connected for room {room_id}")
 
     try:
         while True:
@@ -204,13 +206,15 @@ async def stream_room(websocket: WebSocket, room_id: str):
                         )
                         content = _resolve_mentions(getattr(msg, "content", ""))
                         
+                        # Check if this is the final report
                         is_final_report = "SCAN COMPLETE" in content and "Top findings:" in content
                         
-                        # --- 🚀 THE HYBRID BEAM ---
-                        if is_final_report and not scan_complete:
+                        if is_final_report:
+                            log.info(f"🎯 Final report detected from {sender_name}")
+                            findings_content = content
                             scan_complete = True
                             
-                            # 1. Send the raw findings to UI (Assessment Agent)
+                            # Send the final findings to UI
                             await websocket.send_json({
                                 "id": msg_id,
                                 "author": sender_name,
@@ -219,20 +223,20 @@ async def stream_room(websocket: WebSocket, room_id: str):
                                 "is_done": False,
                             })
                             
-                            # 2. Generate the rest via OpenRouter
+                            # Generate AI report
                             log.info("🚀 Generating AI Learning Path via OpenRouter...")
                             ai_report = await generate_ai_report(content)
                             
-                            # 3. Send the AI report to UI (Fake the author as Curator)
+                            # Send AI report as Curator
                             await websocket.send_json({
                                 "id": f"ai-report-{msg_id}",
-                                "author": "qs-curator", 
+                                "author": "qs-curator",
                                 "content": ai_report,
                                 "created_at": str(_inserted_at(msg)),
                                 "is_done": False,
                             })
                             
-                            # 4. Send final completion message (Fake as Orchestrator)
+                            # Send completion message as Orchestrator
                             await websocket.send_json({
                                 "id": f"done-{msg_id}",
                                 "author": "qs-orchestrator",
@@ -241,12 +245,14 @@ async def stream_room(websocket: WebSocket, room_id: str):
                                 "is_done": True,
                             })
                             
+                            log.info("✅ All messages sent, closing WebSocket")
                             await asyncio.sleep(1)
                             await websocket.close()
                             return
-                            
-                        elif not scan_complete:
-                            # Normal message before scan is complete
+                        
+                        else:
+                            # Send normal message to UI
+                            log.info(f"📨 Forwarding message from {sender_name}: {content[:50]}...")
                             await websocket.send_json({
                                 "id": msg_id,
                                 "author": sender_name,
@@ -254,13 +260,16 @@ async def stream_room(websocket: WebSocket, room_id: str):
                                 "created_at": str(_inserted_at(msg)),
                                 "is_done": False,
                             })
+                            
             except Exception as e:
-                log.warning(f"Band poll error: {e}")
+                log.error(f"Band poll error: {e}", exc_info=True)
 
             await asyncio.sleep(2)
 
     except WebSocketDisconnect:
         log.info(f"Client disconnected from room {room_id}")
+    except Exception as e:
+        log.error(f"WebSocket error: {e}", exc_info=True)
 
 @app.get("/api/health")
 async def health():
